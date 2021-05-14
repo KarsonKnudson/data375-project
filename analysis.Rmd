@@ -1,0 +1,304 @@
+---
+title: "Test2"
+author: "Karson Knudson"
+date: "5/2/2021"
+output: html_document
+---
+
+```{r}
+library(plotly)
+
+# Plot 3D scatter plot
+graph3D <- function(df, directory, category) {
+  fig <- plot_ly(df, type="scatter3d", mode="markers", x = ~hue, y = ~sat, z = ~val, size = ~dl,
+                 marker = list(symbol = 'circle', sizemode = 'area', color=hsv(df$hue, df$sat, df$val), 
+                               line=list(width=1,color=hsv(df$hue, df$sat, min(df$val, 0.3)))),
+                 sizes = c(50, 35000),
+                 hoverinfo='text',
+                 text = ~paste('</br> Hue: ', df$hue,
+                               '</br> Saturation: ', df$sat,
+                               '</br> Value: ', df$val,
+                               '</br> AppId: ', df$appId,
+                               '</br> Downloads: ', df$dl))
+  fig <- fig %>% layout(title = paste('Number of Downloads by Color -', category),
+                        scene = list(xaxis = list(title = 'Hue',
+                                                  gridcolor = 'rgb(255, 255, 255)',
+                                                  range = c(0, 1),
+                                                  zerolinewidth = 1,
+                                                  ticklen = 5,
+                                                  gridwidth = 2),
+                                     yaxis = list(title = 'Saturation',
+                                                  gridcolor = 'rgb(255, 255, 255)',
+                                                  range = c(0, 1),
+                                                  zerolinewidth = 1,
+                                                  ticklen = 5,
+                                                  gridwith = 2),
+                                     zaxis = list(title = 'Value',
+                                                  gridcolor = 'rgb(255, 255, 255)',
+                                                  zerolinewidth = 1,
+                                                  ticklen = 5,
+                                                  gridwith = 2)),
+                        paper_bgcolor = 'rgb(243, 243, 243)',
+                        plot_bgcolor = 'rgb(243, 243, 243)')
+  f<-paste(directory,"\\", category,".html", sep='')
+  htmlwidgets::saveWidget(as_widget(fig), file.path(normalizePath(dirname(f)),basename(f)))
+}
+
+analysis <- function(category) {
+  # Create string to store file name to read
+  filename <- paste("COLOR_DAT/", category, ".info.dat", sep='')
+  # Read all lines from data file
+  lines <- readLines(filename)
+  
+  # Create output directories
+  directory <- paste("VIS/", category, sep='')
+  if (dir.exists("VIS")){
+    if (!dir.exists(directory)){
+      dir.create(directory)
+    }
+  } else {
+    dir.create("VIS")
+    dir.create(directory)
+  }
+  
+  # Pull downloads and RGB tuples from file
+  dl = 0; appId = 0; color = 0; rating = 0; j = 1
+  for (i in seq(1,length(lines))) {
+    switch (
+      (i %% 4) + 1,
+      dl[j] <- as.numeric(lines[i]),
+      appId[j] <- lines[i],
+      color[j] <- strsplit(lines[i], " "),
+      rating[j] <- as.numeric(lines[i])
+    )
+    if (i %% 4 == 0) {
+      j = j + 1
+    }
+  }
+  
+  # Read RGB values into vectors
+  r = 0; g = 0; b = 0
+  for (i in seq(1,length(color))) {
+      r[i] = as.numeric(color[[i]][1])
+      g[i] = as.numeric(color[[i]][2])
+      b[i] = as.numeric(color[[i]][3])
+  }
+  
+  # Convert RGB vectors into HSV vectors
+  hsv = rgb2hsv(r, g, b);
+  hue = hsv[seq(1,length(hsv),3)]
+  sat = hsv[seq(2,length(hsv),3)]
+  val = hsv[seq(3,length(hsv),3)]
+  
+  # Convert to dataframe
+  df <- data.frame(appId, r, g, b, hue, sat, val, dl, rating)
+  
+  # Create 3D graph
+  graph3D(df, directory, category)
+  
+  # Generate graphs and mass/cdf functions
+  process <- function(df, type, n, sat_cut, val_cut) {
+    dx = NULL; den = NULL; dl = 0; dr = NULL;
+    for (i in seq(1, length(type))) {
+      if ((df$sat[i] > sat_cut) & (df$val[i] > val_cut)) {
+        dx = c(dx, type[i])
+        den = c(den, df$dl[i])
+        dr = c(dr, df$rating[i])
+        dl = dl + df$dl[i]
+      }
+    }
+    den = den / dl
+  
+    x = seq(0, 1, 1/n)
+    cdf = 0 * x
+    
+    p1 = 0; p2 = 0; k = 0; csum = 0
+    csum[1] = den[1]
+    for (i in seq(2, length(dx))) {
+      csum[i] = den[i] + csum[i - 1]
+    }
+    
+    for (i in seq(1, length(dx) - 1)) {
+      p1 = ceiling(dx[i] * n) + 1
+      p2 = ceiling(dx[i + 1] * n) + 1
+      if (p1 < p2) {
+        for (k in seq(p1, p2, 1)) {
+          cdf[k] = csum[i]
+        }
+      }
+    }
+    
+    for (k in seq(p2, n + 1, 1)) {
+      cdf[k] = 1
+    }
+    
+    return(list(dx, den, cdf, dr))
+  }
+  
+  # Vector for plotting
+  n = 1000
+  x = seq(0,1,1/n)
+  
+  # Perform hue processing
+  hdf <- df[order(df$hue),]
+  hp = process(hdf, hdf$hue, n, 0.2, 0.3)
+  hx = hp[[1]]; hden = hp[[2]]; hcdf = hp[[3]]; hr = hp[[4]];
+  
+  # Bootstrapping
+  testCol <- NULL;
+  testCat <- NULL;
+  for (i in seq(1:200)) {
+    valColor = NULL;
+    catColor = NULL
+    tx = NULL;
+    index = sample(1:length(hx), size=10,replace=TRUE)
+    tx = hx[index]
+    tden = hden[index]
+    for (i in seq(1, length(tx))) {
+      valColor = c(valColor, tden[i])
+      if (((tx[i] >= 0) & (tx[i] <= (15/360))) | ((tx[i] > (330/360)) & (tx[i] <= (360/360)))) {
+        catColor = c(catColor, "red")
+      }
+      else if ((tx[i] > (15/360)) & (tx[i] <= (45/360))) {
+        catColor = c(catColor, "orange")
+      }
+      else if ((tx[i] > (45/360)) & (tx[i] <= (75/360))) {
+        catColor = c(catColor, "yellow")
+      }
+      else if ((tx[i] > (75/360)) & (tx[i] <= (165/360))) {
+        catColor = c(catColor, "green")
+      }
+      else if ((tx[i] > (165/360)) & (tx[i] <= (255/360))) {
+        catColor = c(catColor, "blue")
+      }
+      else if ((tx[i] > (255/360)) & (tx[i] <= (300/360))) {
+        catColor = c(catColor, "purple")
+      }
+      else if ((tx[i] > (300/360)) & (tx[i] <= (330/360))) {
+        catColor = c(catColor, "magenta")
+      }
+  }
+  colordf <- data.frame(valColor, catColor)
+  sumdf <- aggregate(x = colordf$valColor, by = list(colordf$catColor), FUN = sum)
+  
+  for (i in seq(1, length(sumdf$x))) {
+    testCol <- c(testCol, sumdf$x[i])
+    testCat <- c(testCat, sumdf$Group.1[i])
+  }
+  }
+  meandf <- data.frame(testCol, testCat)
+  props <- aggregate(x = meandf$testCol, by = list(meandf$testCat), FUN = mean)
+  
+  # ANOVA test
+  res.aov <- aov(testCol ~ testCat, data=meandf)
+  pAOV <- summary(res.aov)[[1]][["Pr(>F)"]]
+  
+  if (pAOV < 0.05) {
+    print(paste("Significant difference in means:", category))
+  }
+  
+  maxcolor <- props$Group.1[which.max(props$x)]
+  mincolor <- props$Group.1[which.min(props$x)]
+  
+  print(paste("Max Color:", maxcolor))
+  print(paste("Min Color:", mincolor))
+  
+  # Tukey test
+  #TukeyHSD(res.aov)
+  
+  # Perform saturation processing
+  sdf <- df[order(df$sat),]
+  sp = process(sdf, sdf$sat, n, 0, 0.3)
+  sx = sp[[1]]; sden = sp[[2]]; scdf = sp[[3]]; sr = sp[[4]];
+  
+  # Perform value processing
+  vdf <- df[order(df$val),]
+  vp = process(vdf, vdf$val, n, 0, 0)
+  vx = vp[[1]]; vden = vp[[2]]; vcdf = vp[[3]]; vr = vp[[4]];
+  
+  # Most dominant color
+  hmax = hx[which(hden==max(hden))]
+  
+  # Change plot parameters for black bg
+  par(bg="black",col="black",col.axis="white",col.lab="white",col.main="white",col.sub="white")
+    
+    # Save hue density plot
+    dev.copy(png,paste(directory, "/", category, "_hue_den.png", sep=''))
+    plot(hx, hden, type = 'h', main=paste("Mass by Hue -", category), xlab = "Hue", ylab = "Probability")
+    segments(hx, 0, hx, hden, col=hsv(hx,1,1))
+    dev.off()
+    
+    # Save hue CDF plot
+    dev.copy(png,paste(directory, "/", category, "_hue_cdf.png", sep=''))
+    plot(x, hcdf, main=paste("CDF by Hue -", category), xlab = "Hue", ylab = "Probability")
+    segments(x, 0, x, hcdf, col=hsv(x,1,1))
+    dev.off()
+    
+    # Save hue rating plot
+    dev.copy(png,paste(directory, "/", category, "_hue_rat.png", sep=''))
+    plot(hx, hr, main=paste("Ratings by Hue -", category), xlab = "Hue", ylab = "Rating", col=hsv(hx,1,1))
+    dev.off()
+    
+    # Save sat density plot
+    dev.copy(png,paste(directory, "/", category, "_sat_den.png", sep=''))
+    plot(sx, sden, type = 'h', main=paste("Mass by Saturation -", category), xlab = "Saturation", ylab = "Probability")
+    segments(sx, 0, sx, sden, col=hsv(hmax,sx,1))
+    dev.off()
+    
+    # Save sat CDF plot
+    dev.copy(png,paste(directory, "/", category, "_sat_cdf.png", sep=''))
+    plot(x, scdf, main=paste("CDF by Saturation -", category), xlab = "Saturation", ylab = "Probability")
+    segments(x, 0, x, scdf, col=hsv(hmax,x,1))
+    dev.off()
+    
+    # Save sat rating plot
+    dev.copy(png,paste(directory, "/", category, "_sat_rat.png", sep=''))
+    plot(sx, sr, main=paste("Ratings by Saturation -", category), xlab = "Saturation", ylab = "Rating", col=hsv(hmax,sx,1))
+    dev.off()
+  
+  # Change plot parameters to white bg
+  par(bg="white",col="white",col.axis="black",col.lab="black",col.main="black",col.sub="black")
+  
+    # Save val density plot
+    dev.copy(png,paste(directory, "/", category, "_val_den.png", sep=''))
+    plot(vx, vden, type = 'h', main=paste("Mass by Value -", category), xlab = "Value", ylab = "Probability")
+    segments(vx, 0, vx, vden, col=hsv(hmax,1,vx))
+    dev.off()
+    
+    # Save val CDF plot
+    dev.copy(png,paste(directory, "/", category, "_val_cdf.png", sep=''))
+    plot(x, vcdf, main=paste("CDF by Value -", category), xlab = "Value", ylab = "Probability")
+    segments(x, 0, x, vcdf, col=hsv(hmax,1,x))
+    dev.off()
+    
+    # Save val rating plot
+    dev.copy(png,paste(directory, "/", category, "_val_rat.png", sep=''))
+    plot(vx, vr, main=paste("Ratings by Value -", category), xlab = "Value", ylab = "Rating", col=hsv(hmax,1,vx))
+    dev.off()
+}
+
+# List of all app categories
+categories <- c("APPLICATION", "ANDROID_WEAR", "AUTO_AND_VEHICLES", 
+                "BEAUTY", "BOOKS_AND_REFERENCE", "BUSINESS", "COMICS", "COMMUNICATION",
+                "DATING", "EDUCATION", "ENTERTAINMENT", "FINANCE", "FOOD_AND_DRINK",
+                "GAME", "GAME_ACTION", "GAME_ARCADE", "GAME_BOARD",
+                "GAME_CARD", "GAME_CASINO", "GAME_CASUAL", "GAME_EDUCATIONAL",
+                "GAME_MUSIC", "GAME_RACING", "GAME_ROLE_PLAYING", "GAME_SPORTS", "GAME_STRATEGY", "GAME_TRIVIA",
+                "GAME_WORD", "HEALTH_AND_FITNESS", "LIFESTYLE",
+                "MAPS_AND_NAVIGATION", "MEDICAL", "MUSIC_AND_AUDIO", "NEWS_AND_MAGAZINES", 
+                "PERSONALIZATION", "PHOTOGRAPHY", "PRODUCTIVITY", "SHOPPING",
+                "SOCIAL", "SPORTS", "TOOLS", "TRAVEL_AND_LOCAL", "VIDEO_PLAYERS", "WEATHER")
+
+# Generate visualizations for each category
+if (dir.exists("COLOR_DAT")) {
+  for (category in categories) {
+    print(paste("Starting new category:", category))
+    analysis(category)
+    #print(paste('<option value="',category, "/", category, '.html\">', category,'</option>', sep=''))
+  }
+} else {
+  print("Must put color data files in folder DAT in working directory.")
+}
+print("Done.")
+```
+
